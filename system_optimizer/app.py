@@ -18,7 +18,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 
 from .file_manager import DiskScanner, FileInfo, FileSearch, delete_files
 from .logging_config import configure_logging, get_logger
-from .log_manager import clear_logs, export_logs, generate_performance_report, read_logs
+from .logs import clear_logs, export_logs, generate_performance_report, read_logs
 from .monitor import SystemMonitor
 from .optimizer import (
     CpuTuner,
