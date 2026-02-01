@@ -5,7 +5,16 @@ import sys
 from pathlib import Path
 from typing import Dict, Iterable, List
 
-from PyQt5 import QtChart, QtCore, QtGui, QtWidgets
+try:
+    from PyQt5 import QtChart
+except Exception as _err:  # pragma: no cover - environment specific
+    raise ImportError(
+        "PyQt5.QtChart (PyQtChart) is not installed or not available in this environment.\n"
+        "Install it with: pip install PyQtChart\n"
+        "Or on Debian/Ubuntu/Parrot: sudo apt install python3-pyqt5.qtchart"
+    ) from _err
+
+from PyQt5 import QtCore, QtGui, QtWidgets
 
 from .file_manager import DiskScanner, FileInfo, FileSearch, delete_files
 from .logging_config import configure_logging, get_logger
