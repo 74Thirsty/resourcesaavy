@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 LOG_FORMAT = "{timestamp} - {log_level} - {component} - {message}"
+
+APP_DIR = Path.home() / ".system_optimizer"
+APP_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = APP_DIR / "system_optimizer.log"
 
 
 class ComponentLogger(logging.LoggerAdapter):
@@ -38,6 +43,9 @@ def configure_logging(level: int = logging.INFO) -> None:
     handler = logging.StreamHandler()
     handler.setFormatter(ComponentFormatter())
 
+    file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+    file_handler.setFormatter(ComponentFormatter())
+
     root_logger = logging.getLogger()
     root_logger.setLevel(level)
 
@@ -46,6 +54,7 @@ def configure_logging(level: int = logging.INFO) -> None:
         root_logger.handlers.clear()
 
     root_logger.addHandler(handler)
+    root_logger.addHandler(file_handler)
 
 
 def get_logger(component: str, level: Optional[int] = None) -> ComponentLogger:
