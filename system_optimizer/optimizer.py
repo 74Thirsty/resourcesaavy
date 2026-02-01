@@ -1,3 +1,5 @@
+"""PyQt application for the System Optimizer."""
+
 from __future__ import annotations
 import datetime as dt
 import sys
