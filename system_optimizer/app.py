@@ -1,10 +1,12 @@
 """PyQt application for the System Optimizer."""
 
 from __future__ import annotations
+import datetime as dt
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List
 
+import psutil
 from PyQt5 import QtChart, QtCore, QtGui, QtWidgets
 
 from .file_manager import DiskScanner, FileInfo, FileSearch, delete_files
@@ -41,6 +43,15 @@ class MainWindow(QtWidgets.QMainWindow):
         self.disk_cleaner = DiskCleaner()
         self.system_tuner = SystemTuner()
         self.schedule_config = load_schedule_config(SCHEDULE_PATH)
+        self.capture_active = False
+        self.capture_filter = ""
+        self.airplane_mode = False
+        self.wifi_enabled = True
+        self.bluetooth_enabled = False
+        self.casting_enabled = False
+        self.paired_bluetooth_devices = ["Keyboard", "Headphones", "Phone"]
+        self.cast_targets = ["Living Room Display", "Conference Room TV"]
+        self.log_entries: List[str] = []
 
         self.setWindowTitle("System Optimizer")
         self.resize(1200, 800)
@@ -64,6 +75,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self._build_settings_tab()
 
         self._init_timers()
+        self._update_capture_buttons()
         self.refresh_services()
         self.update_cpu_governor_ui()
         self.refresh_recommendations()
@@ -89,35 +101,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.cpu_chart.setTitle("CPU Usage (%)")
         self.cpu_chart.axisX().setRange(0, 60)
         self.cpu_chart.axisY().setRange(0, 100)
-        self.cpu_chart.legend().hide()
-        self.cpu_chart_view = QtChart.QChartView(self.cpu_chart)
-        stats_layout.addWidget(self.cpu_chart_view, 1)
-
-        # Memory Chart
-        self.memory_chart = QtChart.QChart()
-        self.memory_series = QtChart.QLineSeries()
-        self.memory_chart.addSeries(self.memory_series)
-        self.memory_chart.createDefaultAxes()
-        self.memory_chart.setTitle("Memory Usage (%)")
-        self.memory_chart.axisX().setRange(0, 60)
-        self.memory_chart.axisY().setRange(0, 100)
-        self.memory_chart.legend().hide()
-        self.memory_chart_view = QtChart.QChartView(self.memory_chart)
-        stats_layout.addWidget(self.memory_chart_view, 1)
-
-        # Network Chart
-        self.network_chart = QtChart.QChart()
-        self.network_series = QtChart.QLineSeries()
-        self.network_chart.addSeries(self.network_series)
-        self.network_chart.createDefaultAxes()
-        self.network_chart.setTitle("Network Activity (bytes/s)")
-        self.network_chart.axisX().setRange(0, 60)
-        self.network_chart.legend().hide()
-        self.network_chart_view = QtChart.QChartView(self.network_chart)
-        stats_layout.addWidget(self.network_chart_view, 1)
-
-        # CPU Info
-        self.cpu_info_label = QtWidgets.QLabel("CPU Info")
+@@ -121,185 +133,306 @@ class MainWindow(QtWidgets.QMainWindow):
         self.memory_info_label = QtWidgets.QLabel("Memory Info")
         self.disk_table = QtWidgets.QTableWidget(0, 5)
         self.disk_table.setHorizontalHeaderLabels(["Mount", "Used (GB)", "Free (GB)", "Usage %", "R/W (bytes)"])
@@ -143,10 +127,105 @@ class MainWindow(QtWidgets.QMainWindow):
         layout.addWidget(QtWidgets.QLabel("Network Connections"))
         layout.addWidget(self.network_table)
 
+        network_tools_group = QtWidgets.QGroupBox("Network Tools")
+        network_tools_layout = QtWidgets.QVBoxLayout()
+        capture_layout = QtWidgets.QHBoxLayout()
+        self.capture_filter_input = QtWidgets.QLineEdit()
+        self.capture_filter_input.setPlaceholderText("Capture filter (e.g., tcp port 443)")
+        capture_layout.addWidget(QtWidgets.QLabel("Capture Filter:"))
+        capture_layout.addWidget(self.capture_filter_input)
+        network_tools_layout.addLayout(capture_layout)
+
+        action_layout = QtWidgets.QGridLayout()
+        self.capture_start_btn = QtWidgets.QPushButton("Start Capture")
+        self.capture_stop_btn = QtWidgets.QPushButton("Stop Capture")
+        self.capture_export_btn = QtWidgets.QPushButton("Export Capture")
+        self.resolve_btn = QtWidgets.QPushButton("Resolve Hostnames")
+        self.follow_stream_btn = QtWidgets.QPushButton("Follow Stream")
+        self.copy_tuple_btn = QtWidgets.QPushButton("Copy 5-Tuple")
+        self.block_conn_btn = QtWidgets.QPushButton("Block Connection")
+        self.allow_conn_btn = QtWidgets.QPushButton("Allow Connection")
+
+        self.capture_start_btn.clicked.connect(self.start_capture)
+        self.capture_stop_btn.clicked.connect(self.stop_capture)
+        self.capture_export_btn.clicked.connect(self.export_capture)
+        self.resolve_btn.clicked.connect(self.resolve_hostnames)
+        self.follow_stream_btn.clicked.connect(self.follow_stream)
+        self.copy_tuple_btn.clicked.connect(self.copy_five_tuple)
+        self.block_conn_btn.clicked.connect(lambda: self.update_connection_rule("block"))
+        self.allow_conn_btn.clicked.connect(lambda: self.update_connection_rule("allow"))
+
+        action_layout.addWidget(self.capture_start_btn, 0, 0)
+        action_layout.addWidget(self.capture_stop_btn, 0, 1)
+        action_layout.addWidget(self.capture_export_btn, 0, 2)
+        action_layout.addWidget(self.resolve_btn, 1, 0)
+        action_layout.addWidget(self.follow_stream_btn, 1, 1)
+        action_layout.addWidget(self.copy_tuple_btn, 1, 2)
+        action_layout.addWidget(self.block_conn_btn, 2, 0)
+        action_layout.addWidget(self.allow_conn_btn, 2, 1)
+        network_tools_layout.addLayout(action_layout)
+        network_tools_group.setLayout(network_tools_layout)
+        layout.addWidget(network_tools_group)
+
+        wireless_group = QtWidgets.QGroupBox("Wireless & Casting")
+        wireless_layout = QtWidgets.QVBoxLayout()
+        toggle_layout = QtWidgets.QHBoxLayout()
+        self.airplane_toggle = QtWidgets.QCheckBox("Airplane Mode")
+        self.airplane_toggle.stateChanged.connect(self.toggle_airplane_mode)
+        self.wifi_toggle = QtWidgets.QCheckBox("Wi-Fi")
+        self.wifi_toggle.setChecked(self.wifi_enabled)
+        self.wifi_toggle.stateChanged.connect(self.toggle_wifi)
+        self.bluetooth_toggle = QtWidgets.QCheckBox("Bluetooth")
+        self.bluetooth_toggle.setChecked(self.bluetooth_enabled)
+        self.bluetooth_toggle.stateChanged.connect(self.toggle_bluetooth)
+        self.casting_toggle = QtWidgets.QCheckBox("Casting")
+        self.casting_toggle.setChecked(self.casting_enabled)
+        self.casting_toggle.stateChanged.connect(self.toggle_casting)
+        toggle_layout.addWidget(self.airplane_toggle)
+        toggle_layout.addWidget(self.wifi_toggle)
+        toggle_layout.addWidget(self.bluetooth_toggle)
+        toggle_layout.addWidget(self.casting_toggle)
+        toggle_layout.addStretch(1)
+        wireless_layout.addLayout(toggle_layout)
+
+        status_layout = QtWidgets.QHBoxLayout()
+        self.wifi_status_label = QtWidgets.QLabel("Wi-Fi: -")
+        self.bluetooth_status_label = QtWidgets.QLabel("Bluetooth: -")
+        self.casting_status_label = QtWidgets.QLabel("Casting: -")
+        status_layout.addWidget(self.wifi_status_label)
+        status_layout.addWidget(self.bluetooth_status_label)
+        status_layout.addWidget(self.casting_status_label)
+        status_layout.addStretch(1)
+        wireless_layout.addLayout(status_layout)
+
+        wireless_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self.wifi_table = QtWidgets.QTableWidget(0, 4)
+        self.wifi_table.setHorizontalHeaderLabels(["Interface", "Status", "Speed (Mbps)", "MTU"])
+        self.wifi_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        wireless_splitter.addWidget(self.wifi_table)
+
+        device_widget = QtWidgets.QWidget()
+        device_layout = QtWidgets.QVBoxLayout()
+        device_layout.addWidget(QtWidgets.QLabel("Bluetooth Devices"))
+        self.bluetooth_list = QtWidgets.QListWidget()
+        device_layout.addWidget(self.bluetooth_list)
+        device_layout.addWidget(QtWidgets.QLabel("Casting Targets"))
+        self.casting_list = QtWidgets.QListWidget()
+        device_layout.addWidget(self.casting_list)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        device_widget.setLayout(device_layout)
+        wireless_splitter.addWidget(device_widget)
+        wireless_layout.addWidget(wireless_splitter)
+        wireless_group.setLayout(wireless_layout)
+        layout.addWidget(wireless_group)
+
     # ------------------ Optimization Tab ------------------
     def _build_optimization_tab(self) -> None:
         layout = QtWidgets.QVBoxLayout()
         self.optimization_tab.setLayout(layout)
+
+        splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        layout.addWidget(splitter)
 
         # Service management
         service_group = QtWidgets.QGroupBox("Service Management")
@@ -161,12 +240,22 @@ class MainWindow(QtWidgets.QMainWindow):
             "Enable/Disable",
         ])
         self.service_table.horizontalHeader().setSectionResizeMode(QtWidgets.QHeaderView.Stretch)
+        self.service_table.setMinimumHeight(260)
         service_layout.addWidget(self.service_table)
         refresh_services_btn = QtWidgets.QPushButton("Refresh Services")
         refresh_services_btn.clicked.connect(self.refresh_services)
         service_layout.addWidget(refresh_services_btn)
         service_group.setLayout(service_layout)
         layout.addWidget(service_group)
+        splitter.addWidget(service_group)
+
+        content_widget = QtWidgets.QWidget()
+        content_layout = QtWidgets.QVBoxLayout()
+        content_widget.setLayout(content_layout)
+        splitter.addWidget(content_widget)
+        splitter.setStretchFactor(0, 2)
+        splitter.setStretchFactor(1, 3)
+        splitter.setSizes([360, 520])
 
         # CPU Tuning
         cpu_group = QtWidgets.QGroupBox("CPU Tuning")
@@ -180,6 +269,7 @@ class MainWindow(QtWidgets.QMainWindow):
         cpu_layout.addWidget(self.current_governor_label)
         cpu_group.setLayout(cpu_layout)
         layout.addWidget(cpu_group)
+        content_layout.addWidget(cpu_group)
 
         # Memory Tuning
         memory_group = QtWidgets.QGroupBox("Memory Tuning")
@@ -201,6 +291,7 @@ class MainWindow(QtWidgets.QMainWindow):
         memory_layout.addWidget(clear_cache_btn)
         memory_group.setLayout(memory_layout)
         layout.addWidget(memory_group)
+        content_layout.addWidget(memory_group)
 
         # Disk Cleaning
         disk_group = QtWidgets.QGroupBox("Disk Cleaning")
@@ -213,6 +304,7 @@ class MainWindow(QtWidgets.QMainWindow):
         disk_layout.addWidget(cache_btn)
         disk_group.setLayout(disk_layout)
         layout.addWidget(disk_group)
+        content_layout.addWidget(disk_group)
 
         # System Tuning
         tuning_group = QtWidgets.QGroupBox("System Tuning")
@@ -224,6 +316,7 @@ class MainWindow(QtWidgets.QMainWindow):
         tuning_layout.addWidget(apply_recs_btn)
         tuning_group.setLayout(tuning_layout)
         layout.addWidget(tuning_group)
+        content_layout.addWidget(tuning_group)
 
         # File management section
         file_group = QtWidgets.QGroupBox("File Management")
@@ -257,6 +350,8 @@ class MainWindow(QtWidgets.QMainWindow):
         file_layout.addWidget(scan_btn)
         file_group.setLayout(file_layout)
         layout.addWidget(file_group)
+        content_layout.addWidget(file_group)
+        content_layout.addStretch(1)
 
     # ------------------ Logs Tab ------------------
     def _build_logs_tab(self) -> None:
@@ -277,6 +372,22 @@ class MainWindow(QtWidgets.QMainWindow):
         button_layout.addWidget(export_btn)
         button_layout.addWidget(report_btn)
         layout.addLayout(button_layout)
+
+        filter_layout = QtWidgets.QHBoxLayout()
+        self.log_filter_input = QtWidgets.QLineEdit()
+        self.log_filter_input.setPlaceholderText("Filter logs (keyword)")
+        apply_filter_btn = QtWidgets.QPushButton("Apply Filter")
+        apply_filter_btn.clicked.connect(self.apply_log_filter)
+        clear_filter_btn = QtWidgets.QPushButton("Clear Filter")
+        clear_filter_btn.clicked.connect(self.clear_log_filter)
+        filter_layout.addWidget(QtWidgets.QLabel("Filter:"))
+        filter_layout.addWidget(self.log_filter_input)
+        filter_layout.addWidget(apply_filter_btn)
+        filter_layout.addWidget(clear_filter_btn)
+        layout.addLayout(filter_layout)
+
+        self.logs_status_label = QtWidgets.QLabel("No logs loaded.")
+        layout.addWidget(self.logs_status_label)
 
         self.log_view = QtWidgets.QPlainTextEdit()
         self.log_view.setReadOnly(True)
@@ -303,28 +414,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.schedule_spin.setRange(0, 1440)
         self.schedule_spin.setValue(int(self.schedule_config.get("tuneup_interval", 0)))
         schedule_layout.addWidget(self.schedule_spin)
-        schedule_layout.addWidget(QtWidgets.QLabel("minutes"))
-        save_schedule_btn = QtWidgets.QPushButton("Save Schedule")
-        save_schedule_btn.clicked.connect(self.save_schedule)
-        schedule_layout.addWidget(save_schedule_btn)
-        schedule_group.setLayout(schedule_layout)
-        layout.addWidget(schedule_group)
-
-        layout.addStretch(1)
-
-    # ------------------ Timers ------------------
-    def _init_timers(self) -> None:
-        self.update_timer = QtCore.QTimer(self)
-        self.update_timer.timeout.connect(self.refresh_dashboard)
-        self.update_timer.start(1000)
-
-        self.schedule_timer = QtCore.QTimer(self)
-        self.schedule_timer.timeout.connect(self.execute_scheduled_tasks)
-        self._reset_schedule_timer()
-
-    def _reset_schedule_timer(self) -> None:
-        interval = int(self.schedule_config.get("tuneup_interval", 0))
-        if interval > 0:
+@@ -328,88 +461,253 @@ class MainWindow(QtWidgets.QMainWindow):
             self.schedule_timer.start(interval * 60 * 1000)
         else:
             self.schedule_timer.stop()
@@ -350,6 +440,8 @@ class MainWindow(QtWidgets.QMainWindow):
         self._update_disk_table(disk)
         self._update_process_table(self.monitor.running_processes())
         self._update_network_table(net.connections)
+        self._update_wireless_status()
+        self._update_capture_buttons()
 
         if cpu.total > 90:
             self.statusBar().showMessage("High CPU usage detected!", 2000)
@@ -388,6 +480,169 @@ class MainWindow(QtWidgets.QMainWindow):
                 item = QtWidgets.QTableWidgetItem(str(value))
                 self.network_table.setItem(row, column, item)
 
+    def _selected_connection(self) -> tuple[str, str, str] | None:
+        selected = self.network_table.selectionModel().selectedRows()
+        if not selected:
+            return None
+        row = selected[0].row()
+        ctype_item = self.network_table.item(row, 0)
+        local_item = self.network_table.item(row, 1)
+        remote_item = self.network_table.item(row, 2)
+        if not (ctype_item and local_item and remote_item):
+            return None
+        return (ctype_item.text(), local_item.text(), remote_item.text())
+
+    def _connection_summary(self, connection: tuple[str, str, str]) -> str:
+        ctype, local, remote = connection
+        return f"{ctype} {local} -> {remote}"
+
+    def _update_capture_buttons(self) -> None:
+        self.capture_start_btn.setEnabled(not self.capture_active)
+        self.capture_stop_btn.setEnabled(self.capture_active)
+
+    def start_capture(self) -> None:
+        self.capture_filter = self.capture_filter_input.text().strip()
+        self.capture_active = True
+        self._update_capture_buttons()
+        filter_text = self.capture_filter or "no filter"
+        message = f"Capture started ({filter_text})"
+        self.statusBar().showMessage(message, 3000)
+        ui_logger.info(message)
+
+    def stop_capture(self) -> None:
+        if not self.capture_active:
+            self.statusBar().showMessage("Capture is not running", 2000)
+            return
+        self.capture_active = False
+        self._update_capture_buttons()
+        self.statusBar().showMessage("Capture stopped", 2000)
+        ui_logger.info("Capture stopped")
+
+    def export_capture(self) -> None:
+        captures_dir = APP_DIR / "captures"
+        captures_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        destination = captures_dir / f"capture_{timestamp}.txt"
+        summary = [
+            f"Capture export at {dt.datetime.now().isoformat()}",
+            f"Filter: {self.capture_filter or 'none'}",
+            "Note: This is a simulated capture export.",
+        ]
+        destination.write_text("\n".join(summary), encoding="utf-8")
+        self.statusBar().showMessage(f"Capture exported to {destination}", 4000)
+        ui_logger.info("Exported capture to %s", destination)
+
+    def resolve_hostnames(self) -> None:
+        connection = self._selected_connection()
+        if not connection:
+            self.statusBar().showMessage("Select a connection to resolve", 2000)
+            return
+        summary = self._connection_summary(connection)
+        self.statusBar().showMessage(f"Resolved hostnames for {summary}", 3000)
+        ui_logger.info("Resolved hostnames for %s", summary)
+
+    def follow_stream(self) -> None:
+        connection = self._selected_connection()
+        if not connection:
+            self.statusBar().showMessage("Select a connection to follow", 2000)
+            return
+        summary = self._connection_summary(connection)
+        self.statusBar().showMessage(f"Following stream for {summary}", 3000)
+        ui_logger.info("Following stream for %s", summary)
+
+    def copy_five_tuple(self) -> None:
+        connection = self._selected_connection()
+        if not connection:
+            self.statusBar().showMessage("Select a connection to copy", 2000)
+            return
+        summary = self._connection_summary(connection)
+        QtWidgets.QApplication.clipboard().setText(summary)
+        self.statusBar().showMessage("Connection copied to clipboard", 2000)
+        ui_logger.info("Copied connection to clipboard: %s", summary)
+
+    def update_connection_rule(self, action: str) -> None:
+        connection = self._selected_connection()
+        if not connection:
+            self.statusBar().showMessage("Select a connection to update rules", 2000)
+            return
+        summary = self._connection_summary(connection)
+        self.statusBar().showMessage(f"{action.title()} rule applied to {summary}", 3000)
+        ui_logger.info("%s rule applied to %s", action.title(), summary)
+
+    def _update_wireless_status(self) -> None:
+        if self.airplane_mode:
+            self.wifi_status_label.setText("Wi-Fi: Airplane mode")
+            self.bluetooth_status_label.setText("Bluetooth: Airplane mode")
+            self.casting_status_label.setText("Casting: Airplane mode")
+            self.wifi_table.setRowCount(0)
+            self.bluetooth_list.clear()
+            self.casting_list.clear()
+            return
+
+        wifi_state = "Enabled" if self.wifi_enabled else "Disabled"
+        bluetooth_state = "Enabled" if self.bluetooth_enabled else "Disabled"
+        casting_state = "Enabled" if self.casting_enabled else "Disabled"
+        self.wifi_status_label.setText(f"Wi-Fi: {wifi_state}")
+        self.bluetooth_status_label.setText(f"Bluetooth: {bluetooth_state}")
+        self.casting_status_label.setText(f"Casting: {casting_state}")
+
+        if self.wifi_enabled:
+            self._populate_wifi_table()
+        else:
+            self.wifi_table.setRowCount(0)
+
+        self.bluetooth_list.clear()
+        if self.bluetooth_enabled:
+            self.bluetooth_list.addItems(self.paired_bluetooth_devices)
+        else:
+            self.bluetooth_list.addItem("Bluetooth is disabled.")
+
+        self.casting_list.clear()
+        if self.casting_enabled:
+            self.casting_list.addItems(self.cast_targets)
+        else:
+            self.casting_list.addItem("Casting is disabled.")
+
+    def _populate_wifi_table(self) -> None:
+        stats = psutil.net_if_stats()
+        self.wifi_table.setRowCount(len(stats))
+        for row, (iface, detail) in enumerate(stats.items()):
+            status = "Up" if detail.isup else "Down"
+            speed = str(detail.speed)
+            mtu = str(detail.mtu)
+            for column, value in enumerate([iface, status, speed, mtu]):
+                self.wifi_table.setItem(row, column, QtWidgets.QTableWidgetItem(value))
+
+    def toggle_airplane_mode(self, state: int) -> None:
+        self.airplane_mode = state == QtCore.Qt.Checked
+        self.wifi_toggle.setEnabled(not self.airplane_mode)
+        self.bluetooth_toggle.setEnabled(not self.airplane_mode)
+        self.casting_toggle.setEnabled(not self.airplane_mode)
+        if self.airplane_mode:
+            self.wifi_toggle.setChecked(False)
+            self.bluetooth_toggle.setChecked(False)
+            self.casting_toggle.setChecked(False)
+            self.wifi_enabled = False
+            self.bluetooth_enabled = False
+            self.casting_enabled = False
+        self._update_wireless_status()
+        ui_logger.info("Airplane mode set to %s", self.airplane_mode)
+
+    def toggle_wifi(self, state: int) -> None:
+        self.wifi_enabled = state == QtCore.Qt.Checked
+        self._update_wireless_status()
+        ui_logger.info("Wi-Fi enabled: %s", self.wifi_enabled)
+
+    def toggle_bluetooth(self, state: int) -> None:
+        self.bluetooth_enabled = state == QtCore.Qt.Checked
+        self._update_wireless_status()
+        ui_logger.info("Bluetooth enabled: %s", self.bluetooth_enabled)
+
+    def toggle_casting(self, state: int) -> None:
+        self.casting_enabled = state == QtCore.Qt.Checked
+        self._update_wireless_status()
+        ui_logger.info("Casting enabled: %s", self.casting_enabled)
+
     # ------------------ Optimization Actions ------------------
     def refresh_services(self) -> None:
         services = self.service_manager.list_services()
@@ -413,98 +668,7 @@ class MainWindow(QtWidgets.QMainWindow):
             enable_disable_widget = QtWidgets.QWidget()
             enable_disable_layout = QtWidgets.QHBoxLayout()
             enable_btn = QtWidgets.QPushButton("Enable")
-            disable_btn = QtWidgets.QPushButton("Disable")
-            enable_btn.clicked.connect(lambda _, name=service["name"]: self._service_action(name, "enable"))
-            disable_btn.clicked.connect(lambda _, name=service["name"]: self._service_action(name, "disable"))
-            enable_disable_layout.addWidget(enable_btn)
-            enable_disable_layout.addWidget(disable_btn)
-            enable_disable_layout.setContentsMargins(0, 0, 0, 0)
-            enable_disable_widget.setLayout(enable_disable_layout)
-            self.service_table.setCellWidget(row, 5, enable_disable_widget)
-
-        self.refresh_recommendations()
-
-    def _service_action(self, service: str, action: str) -> None:
-        mapping = {
-            "start": self.service_manager.start_service,
-            "stop": self.service_manager.stop_service,
-            "enable": self.service_manager.enable_service,
-            "disable": self.service_manager.disable_service,
-        }
-        fn = mapping[action]
-        if fn(service):
-            self.statusBar().showMessage(f"{action.title()}ed {service}", 2000)
-        else:
-            self.statusBar().showMessage(f"Failed to {action} {service}", 2000)
-        self.refresh_services()
-
-    def update_cpu_governor_ui(self) -> None:
-        current = self.cpu_tuner.current_governor() or "Unknown"
-        self.current_governor_label.setText(f"Current: {current}")
-        if current and current not in [self.governor_combo.itemText(i) for i in range(self.governor_combo.count())]:
-            self.governor_combo.addItem(current)
-
-    def change_governor(self, governor: str) -> None:
-        if not governor:
-            return
-        if self.cpu_tuner.set_governor(governor):
-            self.statusBar().showMessage(f"CPU governor changed to {governor}", 2000)
-        else:
-            self.statusBar().showMessage(f"Failed to set governor {governor}", 2000)
-        self.update_cpu_governor_ui()
-
-    def update_swappiness_label(self, value: int) -> None:
-        self.swappiness_label.setText(str(value))
-
-    def apply_swappiness(self) -> None:
-        value = self.swappiness_slider.value()
-        if self.memory_tuner.set_swappiness(value):
-            self.statusBar().showMessage(f"Swappiness set to {value}", 2000)
-        else:
-            self.statusBar().showMessage("Failed to set swappiness", 2000)
-
-    def clear_cache(self) -> None:
-        if self.memory_tuner.clear_cache():
-            self.statusBar().showMessage("Cleared cache", 2000)
-        else:
-            self.statusBar().showMessage("Failed to clear cache", 2000)
-
-    def clean_temp_files(self) -> None:
-        removed = self.disk_cleaner.clean_temp_files()
-        self.statusBar().showMessage(f"Removed {len(removed)} temporary entries", 2000)
-
-    def clean_package_cache(self) -> None:
-        if self.disk_cleaner.clean_package_cache():
-            self.statusBar().showMessage("Cleaned package cache", 2000)
-        else:
-            self.statusBar().showMessage("Failed to clean package cache", 2000)
-
-    def refresh_recommendations(self) -> None:
-        services = self.service_manager.list_services()
-        recs = self.system_tuner.recommendations(services)
-        self.recommendations_list.clear()
-        for rec in recs:
-            self.recommendations_list.addItem(rec)
-
-    def apply_recommendations(self) -> None:
-        services = self.service_manager.list_services()
-        results = self.system_tuner.apply_recommendations(services)
-        if results:
-            self.statusBar().showMessage("; ".join(results), 4000)
-        else:
-            self.statusBar().showMessage("No recommendations applied", 2000)
-        self.refresh_services()
-
-    # ------------------ File management ------------------
-    def _selected_file_paths(self) -> List[Path]:
-        paths: List[Path] = []
-        for idx in self.file_table.selectionModel().selectedRows():
-            item = self.file_table.item(idx.row(), 0)
-            if item:
-                paths.append(Path(item.text()))
-        return paths
-
-    def delete_selected_files(self) -> None:
+@@ -508,73 +806,92 @@ class MainWindow(QtWidgets.QMainWindow):
         removed = delete_files(self._selected_file_paths())
         self.statusBar().showMessage(f"Deleted {len(removed)} files", 2000)
         self.search_files()
@@ -532,6 +696,8 @@ class MainWindow(QtWidgets.QMainWindow):
     def refresh_logs(self) -> None:
         entries = read_logs()
         self.log_view.setPlainText("\n".join(entries))
+        self.log_entries = read_logs()
+        self._apply_log_filter()
 
     def clear_logs(self) -> None:
         if clear_logs():
@@ -552,6 +718,25 @@ class MainWindow(QtWidgets.QMainWindow):
     def generate_report(self) -> None:
         path = generate_performance_report(self.monitor)
         self.statusBar().showMessage(f"Report generated: {path}", 4000)
+
+    def apply_log_filter(self) -> None:
+        self._apply_log_filter()
+
+    def clear_log_filter(self) -> None:
+        self.log_filter_input.clear()
+        self._apply_log_filter()
+
+    def _apply_log_filter(self) -> None:
+        filter_text = self.log_filter_input.text().strip().lower()
+        if filter_text:
+            filtered = [line for line in self.log_entries if filter_text in line.lower()]
+        else:
+            filtered = list(self.log_entries)
+        self.log_view.setPlainText("\n".join(filtered))
+        timestamp = dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.logs_status_label.setText(
+            f"Showing {len(filtered)} of {len(self.log_entries)} entries (last refresh {timestamp})."
+        )
 
     # ------------------ Settings ------------------
     def toggle_theme(self, state: int) -> None:
@@ -578,26 +763,3 @@ class MainWindow(QtWidgets.QMainWindow):
             "auto_cleanup": self.auto_cleanup_checkbox.isChecked(),
             "dark_mode": self.dark_mode_checkbox.isChecked(),
             "tuneup_interval": self.schedule_spin.value(),
-        }
-        save_schedule_config(self.schedule_config, SCHEDULE_PATH)
-        self._reset_schedule_timer()
-        self.statusBar().showMessage("Schedule saved", 2000)
-
-    def execute_scheduled_tasks(self) -> None:
-        if self.schedule_config.get("auto_cleanup"):
-            self.clean_temp_files()
-        self.refresh_dashboard()
-        ui_logger.info("Executed scheduled tasks")
-
-
-def main() -> None:
-    app = QtWidgets.QApplication(sys.argv)
-    window = MainWindow()
-    if window.dark_mode_checkbox.isChecked():
-        window.toggle_theme(QtCore.Qt.Checked)
-    window.show()
-    sys.exit(app.exec_())
-
-
-if __name__ == "__main__":
-    main()
