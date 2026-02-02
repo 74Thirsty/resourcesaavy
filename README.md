@@ -35,6 +35,10 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+[![626413104-122200094594568021-4454837167148093429-n-(1).jpg](https://i.postimg.cc/BnryxDzL/626413104-122200094594568021-4454837167148093429-n-(1).jpg)](https://postimg.cc/BjCM3844)
+[![rs_saavy2.png](https://i.postimg.cc/Y2RJJvvh/rs_saavy2.png)](https://postimg.cc/hhJymPbB)
+[![rs_saav32.png](https://i.postimg.cc/Kj0wLH6H/rs_saav32.png)](https://postimg.cc/D4bx3Byr)
+
 
 ## Notes
 
