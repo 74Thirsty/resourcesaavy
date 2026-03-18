@@ -1,7 +1,6 @@
 # System Optimizer
 
-![Sheen Banner](https://raw.githubusercontent.com/74Thirsty/74Thirsty/main/assets/resourcesaavy.png)
-
+[![resourcesaavy.png](https://i.postimg.cc/RZwXMXHh/resourcesaavy.png)](https://postimg.cc/gxkvsy4b)
 
 System Optimizer is a PyQt5 desktop application that monitors system resources, manages services, and helps keep your machine tidy. It provides a dashboard for CPU, memory, disk, and network activity, tools for tuning and cleaning the system, and utilities for browsing logs and generating performance reports.
 
